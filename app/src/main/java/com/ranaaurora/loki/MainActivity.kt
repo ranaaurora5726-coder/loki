@@ -3,6 +3,8 @@ package com.ranaaurora.loki
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
+import android.content.ContentUris
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
@@ -16,6 +18,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.runtime.DisposableEffect
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.Player
+import androidx.media3.common.MediaItem
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,7 +44,8 @@ data class Track(
     val id: Long,
     val title: String,
     val artist: String,
-    val album: String
+    val album: String,
+    val uri: Uri
 )
 
 class MainActivity : ComponentActivity() {
@@ -84,7 +95,8 @@ private fun loadTracks(context: android.content.Context): List<Track> {
                     id = cursor.getLong(idColumn),
                     title = cursor.getString(titleColumn) ?: "Unknown Title",
                     artist = cursor.getString(artistColumn) ?: "Unknown Artist",
-                    album = cursor.getString(albumColumn) ?: "Unknown Album"
+                    album = cursor.getString(albumColumn) ?: "Unknown Album",
+                    uri = ContentUris.withAppendedId(collection, cursor.getLong(idColumn))
                 )
             )
         }
@@ -99,6 +111,26 @@ fun LokiHome() {
 
     val tracks = remember { mutableStateListOf<Track>() }
     var status by remember { mutableStateOf("Your music realm awaits") }
+    var currentTrack by remember { mutableStateOf<Track?>(null) }
+    var isPlaying by remember { mutableStateOf(false) }
+
+    val player = remember(context) {
+        ExoPlayer.Builder(context).build()
+    }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            player.release()
+        }
+    }
+
     var permissionGranted by remember {
         mutableStateOf(
             context.checkSelfPermission(audioPermission()) ==
@@ -117,6 +149,17 @@ fun LokiHome() {
             }
         } catch (e: Exception) {
             status = "Unable to scan music files"
+        }
+    }
+
+    fun playTrack(track: Track) {
+        try {
+            currentTrack = track
+            player.setMediaItem(MediaItem.fromUri(track.uri))
+            player.prepare()
+            player.play()
+        } catch (e: Exception) {
+            status = "Unable to play this track"
         }
     }
 
@@ -187,7 +230,6 @@ fun LokiHome() {
                         fontSize = 11.sp,
                         letterSpacing = 2.sp
                     )
-
                     Text(
                         "${tracks.size} TRACKS",
                         color = Emerald,
@@ -237,17 +279,13 @@ fun LokiHome() {
                                 tint = Emerald,
                                 modifier = Modifier.size(52.dp)
                             )
-
                             Spacer(Modifier.height(14.dp))
-
                             Text(
                                 status,
                                 color = Color.White,
                                 fontSize = 16.sp
                             )
-
                             Spacer(Modifier.height(6.dp))
-
                             Text(
                                 "Scan your device to discover music",
                                 color = Color(0xFF9AA79F),
@@ -267,9 +305,13 @@ fun LokiHome() {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(
-                                        SurfaceColor,
+                                        if (currentTrack?.id == track.id)
+                                            Color(0xFF14251C)
+                                        else
+                                            SurfaceColor,
                                         RoundedCornerShape(14.dp)
                                     )
+                                    .clickable { playTrack(track) }
                                     .padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -297,7 +339,69 @@ fun LokiHome() {
                                         maxLines = 1
                                     )
                                 }
+
+                                if (currentTrack?.id == track.id && isPlaying) {
+                                    Icon(
+                                        Icons.Default.PlayArrow,
+                                        contentDescription = "Now playing",
+                                        tint = Emerald
+                                    )
+                                }
                             }
+                        }
+                    }
+                }
+
+                if (currentTrack != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                SurfaceColor,
+                                RoundedCornerShape(16.dp)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = Gold,
+                            modifier = Modifier.size(30.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                currentTrack?.title ?: "",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                            Text(
+                                currentTrack?.artist ?: "",
+                                color = Color(0xFF9AA79F),
+                                fontSize = 11.sp,
+                                maxLines = 1
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                if (player.isPlaying) {
+                                    player.pause()
+                                } else {
+                                    player.play()
+                                }
+                            }
+                        ) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Pause
+                                else Icons.Default.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                tint = Emerald,
+                                modifier = Modifier.size(30.dp)
+                            )
                         }
                     }
                 }
