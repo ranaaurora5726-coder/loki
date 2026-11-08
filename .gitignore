@@ -1,0 +1,5 @@
+*.apk
+latest-apk/
+*.jks
+*.keystore
+.loki-signing.env

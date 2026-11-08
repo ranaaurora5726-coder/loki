@@ -1,5 +1,10 @@
 package com.ranaaurora.loki
 
+import com.google.common.util.concurrent.ListenableFuture
+import androidx.media3.session.SessionToken
+import androidx.media3.session.MediaController
+import androidx.core.content.ContextCompat
+import android.content.ComponentName
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import androidx.compose.foundation.Image
@@ -27,6 +32,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,7 +41,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.DisposableEffect
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.MediaItem
 import androidx.compose.material3.IconButton
@@ -190,36 +196,61 @@ fun LokiHome() {
     var progressMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
 
-    val player = remember(context) {
-        ExoPlayer.Builder(context).build()
+    var player by remember { mutableStateOf<MediaController?>(null) }
+
+    DisposableEffect(context) {
+        val token = SessionToken(
+            context,
+            ComponentName(context, PlaybackService::class.java)
+        )
+        val future = MediaController.Builder(context, token).buildAsync()
+
+        future.addListener({
+            try {
+                player = future.get()
+                status = "LOKI Player connected"
+            } catch (e: Exception) {
+                status = "Unable to connect to playback service"
+            }
+        }, ContextCompat.getMainExecutor(context))
+
+        onDispose {
+            MediaController.releaseFuture(future)
+        }
     }
 
     DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
+        val activePlayer = player
+        if (activePlayer != null) {
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    isPlaying = playing
+                }
+
+                override fun onMediaItemTransition(
+                    mediaItem: MediaItem?,
+                    reason: Int
+                ) {
+                    currentTrack = tracks.getOrNull(activePlayer.currentMediaItemIndex)
+                }
             }
 
-            override fun onMediaItemTransition(
-                mediaItem: MediaItem?,
-                reason: Int
-            ) {
-                currentTrack = tracks.getOrNull(player.currentMediaItemIndex)
+            activePlayer.addListener(listener)
+
+            onDispose {
+                activePlayer.removeListener(listener)
             }
-        }
-
-        player.addListener(listener)
-
-        onDispose {
-            player.removeListener(listener)
-            player.release()
+        } else {
+            onDispose { }
         }
     }
 
     LaunchedEffect(player) {
         while (true) {
-            progressMs = player.currentPosition.coerceAtLeast(0L)
-            durationMs = player.duration.takeIf { it > 0L } ?: 0L
+            player?.let {
+                progressMs = it.currentPosition.coerceAtLeast(0L)
+                durationMs = it.duration.takeIf { value -> value > 0L } ?: 0L
+            }
             delay(500)
         }
     }
@@ -249,13 +280,17 @@ fun LokiHome() {
         try {
             val index = tracks.indexOfFirst { it.id == track.id }
             if (index >= 0) {
-                player.setMediaItems(
+                val activePlayer = player ?: run {
+                    status = "Player is connecting"
+                    return
+                }
+                activePlayer.setMediaItems(
                     tracks.map { MediaItem.fromUri(it.uri) },
                     index,
                     0L
                 )
-                player.prepare()
-                player.play()
+                activePlayer.prepare()
+                activePlayer.play()
                 currentTrack = track
             }
         } catch (e: Exception) {
@@ -264,19 +299,22 @@ fun LokiHome() {
     }
 
     fun playNext() {
-        if (player.hasNextMediaItem()) {
-            player.seekToNextMediaItem()
-            player.play()
+        player?.let {
+            if (it.hasNextMediaItem()) {
+                it.seekToNextMediaItem()
+                it.play()
+            }
         }
     }
 
     fun playPrevious() {
-        if (player.hasPreviousMediaItem()) {
-            player.seekToPreviousMediaItem()
-            player.play()
-        } else {
-            player.seekTo(0L)
-            player.play()
+        player?.let {
+            if (it.hasPreviousMediaItem()) {
+                it.seekToPreviousMediaItem()
+            } else {
+                it.seekTo(0L)
+            }
+            it.play()
         }
     }
 
@@ -313,6 +351,8 @@ fun LokiHome() {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
                         .padding(horizontal = 24.dp, vertical = 18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -329,17 +369,7 @@ fun LokiHome() {
                         }
 
                         Spacer(Modifier.weight(1f))
-
-                        Text(
-                            "NOW PLAYING",
-                            color = Gold,
-                            fontSize = 11.sp,
-                            letterSpacing = 3.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
                         Spacer(Modifier.weight(1f))
-
                         Spacer(Modifier.size(48.dp))
                     }
 
@@ -353,7 +383,17 @@ fun LokiHome() {
                             .clip(RoundedCornerShape(24.dp))
                     )
 
-                    Spacer(Modifier.height(28.dp))
+                    Spacer(Modifier.height(16.dp))
+
+                    Text(
+                        "NOW PLAYING",
+                        color = Gold,
+                        fontSize = 11.sp,
+                        letterSpacing = 3.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(Modifier.height(16.dp))
 
                     Text(
                         currentTrack!!.title,
@@ -385,7 +425,7 @@ fun LokiHome() {
                             progressMs = it.toLong()
                         },
                         onValueChangeFinished = {
-                            player.seekTo(progressMs)
+                            player?.seekTo(progressMs)
                         },
                         valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
                         colors = SliderDefaults.colors(
@@ -429,8 +469,9 @@ fun LokiHome() {
 
                         IconButton(
                             onClick = {
-                                if (player.isPlaying) player.pause()
-                                else player.play()
+                                player?.let {
+                                    if (it.isPlaying) it.pause() else it.play()
+                                }
                             },
                             modifier = Modifier
                                 .size(72.dp)
@@ -471,6 +512,8 @@ fun LokiHome() {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
                         .padding(horizontal = 22.dp, vertical = 24.dp)
                 ) {
                     Row(
@@ -697,8 +740,9 @@ fun LokiHome() {
 
                             IconButton(
                                 onClick = {
-                                    if (player.isPlaying) player.pause()
-                                    else player.play()
+                                    player?.let {
+                                        if (it.isPlaying) it.pause() else it.play()
+                                    }
                                 }
                             ) {
                                 Icon(
